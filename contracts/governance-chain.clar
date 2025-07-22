@@ -65,3 +65,60 @@
   {proposal-id: uint, voter: principal}
   {amount: uint}
 )
+
+;; private functions
+(define-private (create-proposal-internal
+                  (title (string-utf8 100))
+                  (description (string-utf8 500))
+                  (duration uint)
+                  (action-contract principal)
+                  (action-function (string-ascii 128))
+                  (action-args (list 10 (string-utf8 100))))
+  (let ((proposal-id (var-get total-proposals))
+        (start-block (unwrap-panic (get-block-info? time u0)))
+        (end-block (+ start-block duration)))
+    
+    (map-set proposals proposal-id
+      {
+        title: title,
+        description: description,
+        proposer: tx-sender,
+        start-block-height: start-block,
+        end-block-height: end-block,
+        status: status-active,
+        for-votes: u0,
+        against-votes: u0,
+        abstain-votes: u0,
+        action-contract: action-contract,
+        action-function: action-function,
+        action-args: action-args
+      })
+    
+    (var-set total-proposals (+ proposal-id u1))
+    (ok proposal-id)))
+
+(define-private (is-proposal-active (proposal-id uint))
+  (let ((proposal (unwrap! (map-get? proposals proposal-id) false))
+        (current-height (unwrap-panic (get-block-info? time u0))))
+    (and
+      (is-eq (get status proposal) status-active)
+      (<= (get start-block-height proposal) current-height)
+      (>= (get end-block-height proposal) current-height))))
+
+(define-private (get-voting-power (voter principal))
+  ;; In a real implementation, this would query the token contract
+  ;; For simplicity, we'll return a fixed value
+  u100)
+
+;; public functions
+(define-public (create-proposal
+                (title (string-utf8 100))
+                (description (string-utf8 500))
+                (duration uint)
+                (action-contract principal)
+                (action-function (string-ascii 128))
+                (action-args (list 10 (string-utf8 100))))
+  (let ((voting-power (get-voting-power tx-sender)))
+    (asserts! (>= voting-power u10) err-insufficient-tokens)
+    (asserts! (>= duration min-proposal-duration) err-unauthorized)
+    (create-proposal-internal title description duration action-contract action-function action-args)))
