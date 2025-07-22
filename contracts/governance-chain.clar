@@ -14,6 +14,12 @@
 (define-constant err-proposal-not-active (err u108))
 (define-constant err-invalid-vote (err u109))
 
+;; New error codes
+(define-constant err-cannot-cancel (err u110))
+(define-constant err-cannot-update (err u111))
+(define-constant err-proposal-started (err u112))
+
+
 ;; Proposal status values
 (define-constant status-active u1)
 (define-constant status-approved u2)
@@ -66,6 +72,12 @@
   {amount: uint}
 )
 
+;; Event log for proposal lifecycle
+(define-map proposal-events
+  {proposal-id: uint, event-type: (string-ascii 32)}
+  {block: uint, sender: principal, info: (string-utf8 200)}
+)
+
 ;; private functions
 (define-private (create-proposal-internal
                   (title (string-utf8 100))
@@ -95,6 +107,7 @@
       })
     
     (var-set total-proposals (+ proposal-id u1))
+    (map-set proposal-events {proposal-id: proposal-id, event-type: "created"} {block: start-block, sender: tx-sender, info: title})
     (ok proposal-id)))
 
 (define-private (is-proposal-active (proposal-id uint))
@@ -149,6 +162,7 @@
         (map-set proposals proposal-id (merge proposal {against-votes: (+ (get against-votes proposal) amount)}))
         (map-set proposals proposal-id (merge proposal {abstain-votes: (+ (get abstain-votes proposal) amount)}))))
     
+    (map-set proposal-events {proposal-id: proposal-id, event-type: "voted"} {block: (unwrap-panic (get-block-info? time u0)), sender: tx-sender, info: u"voted"})
     (ok true)))
 
 (define-public (finalize-proposal (proposal-id uint))
@@ -173,6 +187,7 @@
       ;; Quorum not reached, proposal rejected
       (map-set proposals proposal-id (merge proposal {status: status-rejected})))
     
+    (map-set proposal-events {proposal-id: proposal-id, event-type: "finalized"} {block: current-height, sender: tx-sender, info: u""})
     (ok true)))
 
 (define-public (execute-proposal (proposal-id uint))
@@ -186,6 +201,38 @@
     
     ;; In a real implementation, this would execute the proposal's action
     ;; For simplicity, we'll just return success
+    (map-set proposal-events {proposal-id: proposal-id, event-type: "executed"} {block: (unwrap-panic (get-block-info? time u0)), sender: tx-sender, info: u""})
+    (ok true)))
+
+;; New: Cancel a proposal (by proposer or owner, only if voting hasn't started)
+(define-public (cancel-proposal (proposal-id uint))
+  (let ((proposal (unwrap! (map-get? proposals proposal-id) err-not-found))
+        (current-height (unwrap-panic (get-block-info? time u0))))
+    (asserts! (or (is-eq tx-sender (get proposer proposal)) (is-eq tx-sender contract-owner)) err-cannot-cancel)
+    (asserts! (> (get start-block-height proposal) current-height) err-proposal-started)
+    (map-set proposals proposal-id (merge proposal {status: status-rejected}))
+    (map-set proposal-events {proposal-id: proposal-id, event-type: "cancelled"} {block: current-height, sender: tx-sender, info: u""})
+    (ok true)))
+
+;; New: Update proposal details (by proposer or owner, only before voting starts)
+(define-public (update-proposal (proposal-id uint)
+    (title (string-utf8 100))
+    (description (string-utf8 500))
+    (action-contract principal)
+    (action-function (string-ascii 128))
+    (action-args (list 10 (string-utf8 100))))
+  (let ((proposal (unwrap! (map-get? proposals proposal-id) err-not-found))
+        (current-height (unwrap-panic (get-block-info? time u0))))
+    (asserts! (or (is-eq tx-sender (get proposer proposal)) (is-eq tx-sender contract-owner)) err-cannot-update)
+    (asserts! (> (get start-block-height proposal) current-height) err-proposal-started)
+    (map-set proposals proposal-id (merge proposal {
+      title: title,
+      description: description,
+      action-contract: action-contract,
+      action-function: action-function,
+      action-args: action-args
+    }))
+    (map-set proposal-events {proposal-id: proposal-id, event-type: "updated"} {block: current-height, sender: tx-sender, info: title})
     (ok true)))
 
 (define-read-only (get-proposal (proposal-id uint))
@@ -196,6 +243,10 @@
 
 (define-read-only (get-proposal-count)
   (var-get total-proposals))
+
+;; New: Get proposal event log
+(define-read-only (get-proposal-event (proposal-id uint) (event-type (string-ascii 32)))
+  (map-get? proposal-events {proposal-id: proposal-id, event-type: event-type}))
 
 (define-public (set-governance-token (token-contract principal))
   (begin
